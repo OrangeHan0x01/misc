@@ -6,7 +6,7 @@ parser.add_argument("-s","--sample",help="获取样例数据，每个文件10条
 parser.add_argument("-w","--watch",help="查看目录文件")
 parser.add_argument("-k","--keyword",help="正常输入关键字，用;进行分隔")
 parser.add_argument("-kl","--keylist",help="用一个文件输入用;分隔的关键字列表")
-parser.add_argument('-d','--database',help='用;分隔要使用的数据库列表，包括netease,gongan,leakmember和一个all')
+parser.add_argument('-d','--database',help='用;分隔要使用的数据库列表,用all获取全部--或者干脆不输入此参数')
 parser.add_argument('-o','--outfile',help='输出文件')
 parser.add_argument('-c','--clean',help='在其它流程完成后，去除目标文件中重复数据')
 
