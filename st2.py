@@ -133,8 +133,11 @@ if(args.watch):
 
 #此处获取sample
 if(args.sample):
-	for fpath in dbpath:
-		sample_get(fpath)
+	print(dbpath)
+	for fpaths in dbpath:
+		fpath=fpaths.split(',')[0]
+		enc=fpaths.split(',')[1]
+		sample_get(fpath,enc=enc)
 #此处进行搜索
 if(args.keyword or args.keylist):
 	for fpaths in dbpath:
