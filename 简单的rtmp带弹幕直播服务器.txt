@@ -1,0 +1,209 @@
+使用nginx-1.7.11.3-Gryphon版本；
+	python-websocket弹幕后端代码：
+from flask import Flask
+from flask_sockets import Sockets
+from gevent import monkey
+from gevent import pywsgi
+from geventwebsocket.handler import WebSocketHandler
+import redis
+#import time
+import json
+#使用双显示模式，另添加一个python程序，实时显示产生的弹幕（通过redis）
+monkey.patch_all()
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'donottellothers'
+app_socket = Sockets(app)
+print('server starting..')
+#pool = redis.ConnectionPool(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r.flushdb()
+r.set('lastid',0)
+@app_socket.route('/ws')
+def page_websocket_test(ws):
+	while not ws.closed:
+		lastid=int(r.get('lastid'))
+		message = ws.receive()
+		if message is not None:
+			print(message)
+			danmudata=json.loads(message)
+			if(danmudata['id']=='0'):
+				#返回最多近10条弹幕,r.get没有数据时会返回为空（不是空消息），用not None或==None来判断
+				lastid=int(r.get('lastid'))
+				startid=1
+				if(lastid>=1):#空弹幕时不进行操作
+					if(lastid>=11):
+						startid=lastid-10#startid需要大于等于1，因为0是没数据的
+					retids=range(startid+1,lastid+1)
+					for i in retids:
+						ws.send(r.get(str(i)))
+			elif(danmudata['id']=='1'):#否则，接收数据
+				#上传到redis，且弹幕计数自增,从1开始
+				r.incr('lastid', amount=1)
+				r.set(r.get('lastid'),message)#直接传进去，暂时不考虑性能问题
+				#ws.send(str(json.dumps(message)))#回传给clicent
+				#id='2'表示这是持续连接请求,注意websocket需要与客户通信才能持续。
+			elif(danmudata['id']=='2'):
+				ws.send(message)
+		n_lastid=int(r.get('lastid'))
+		if(lastid!=n_lastid):
+			retids=range(lastid+1,n_lastid+1)
+			for i in retids:
+				ws.send(r.get(str(i)))
+			lastid=n_lastid
+
+server = pywsgi.WSGIServer(('0.0.0.0', 57581), app, handler_class=WebSocketHandler)
+print('server started!')
+server.serve_forever()
+
+	html前端代码：
+<!DOCTYPE HTML>
+<meta charset="UTF-8">
+<html>
+<head>
+<title>VideoPlay</title>
+</head>
+<body>
+<div id="dplayer" class="dplayer" ></div>
+<script src="https://cdn.jsdelivr.net/npm/dplayer@1.27.0/dist/DPlayer.min.js"></script>
+<script src="https://cdn.bootcss.com/jquery/3.2.0/jquery.js"></script>
+<script src="hls.js"></script>
+<!--<script src="DPlayer.min.js"></script>-->
+
+<style>
+#dplayer {
+	max-width: 960px;
+	height: 620px;
+	margin: 0 auto;
+}
+</style>
+<script>
+        var option = {
+            danmaku: {
+                id: '1',
+                api: 'http://$$ip$$:57580/comments/ws',//每次将后端上次请求时间戳后产生的新弹幕发送
+                author:((new Date()).valueOf()-1674000000000).toString(16)+Math.ceil(Math.random()*2000).toString(16),//先这样做，其实是可以服务端改的，只是服务端改需要确保read函数能够连接上
+            },
+        };
+        var dp;
+        var openws=0;
+        if ("WebSocket" in window){try{var ws = new WebSocket("ws://$$ip$$:57580/comments/ws");openws=1;console.log("ws-connected.");}catch(e){openws=0;console.log("websocket异常:"+e);} }else{alert("您的浏览器不支持 WebSocket,弹幕功能关闭");}
+        ws.onmessage = function (evt){
+                 const _edata=JSON.parse(evt.data);
+                 console.log('evt.data：',evt);
+                 if(_edata.author!=option.author&&_edata.id!="2"){
+                     const danmaku = {
+                            text: _edata.text,
+                            color: "#"+_edata.color.toString(16),
+                            type: 'right',
+                      };
+                      console.log('收到新弹幕，进行渲染：',danmaku);
+                      dp.danmaku.draw(danmaku);
+                  }
+        }
+        dp = new DPlayer({
+            container: document.getElementById('dplayer'),live: true,danmaku: true,
+            apiBackend: {
+                 read: function (options) {
+                     if(ws.readyState===1){ws.send(JSON.stringify({id:0,author:option.danmaku.author,text:""}));console.log('连接弹幕完毕');}
+                     else{
+                         console.log('暂未连接');//三秒后再连接，其实这里可以设置成循环或者递归，但是懒得搞了，连不上就连不上吧
+                         setTimeout(function(){ws.send(JSON.stringify({id:0,author:option.danmaku.author,text:""}));console.log('连接弹幕完毕');},3000);
+                     }//使用id0来读取历史弹幕
+                     options.success([]);
+                 },
+                  send: function (options) {
+                      options.data.id=option.danmaku.id;
+                      options.data.author=option.danmaku.author;
+                      if(ws.readyState===1){ws.send(JSON.stringify(options.data));}
+                      console.log('发送弹幕完毕:', options.data);
+                      options.success();//问题：会自动渲染自己发的弹幕；解决问题：
+                  },
+            },
+            video: {
+	url: 'http://$$ip$$:57580/hls/home.m3u8',
+                type: 'hls',
+            },
+        });
+        var t2 = window.setInterval(function() {if(ws.readyState===1){ws.send(JSON.stringify({id:2,author:option.danmaku.author,text:""}))}},4000)
+</script>
+</body>
+</html>
+
+	nginx.conf文件:
+worker_processes 2;
+events {
+  worker_connections 8192;
+}
+
+rtmp {
+  server {
+    listen 1935;
+    application live {
+      live on;
+    }
+    application hls {
+      live on;
+      hls on;
+      hls_path D:/nginx-1.7.11.3-Gryphon/hls/;
+      hls_fragment 5s;
+    }
+    chunk_size 4096;
+  }
+}
+
+http {
+  include mime.types;
+  default_type application/octet-stream;
+  sendfile off;
+  server_names_hash_bucket_size 128;
+  client_body_timeout 10;
+  client_header_timeout 10;
+  keepalive_timeout 30;
+  send_timeout 10;
+  keepalive_requests 10;
+  server {
+    listen 57580;
+    server_name localhost;
+    index web/index.html;
+    location /hls/ {
+      types {
+        application/vnd.apple.mpegurl m3u8;
+        video/mp2t ts;
+      }
+      alias D:/nginx-1.7.11.3-Gryphon/hls/;
+      expires -1;
+    }
+    location /stat {
+      rtmp_stat all;
+      rtmp_stat_stylesheet stat.xsl;
+    }
+    location /stat.xsl {
+      root nginx-rtmp-module/;
+    }
+    location /control {
+      rtmp_control all;
+    }
+    location / {
+    add_header Access-Control-Allow-Origin *;
+    add_header Access-Control-Allow-Credentials true;
+    add_header Access-Control-Allow-Methods 'GET,POST,PUT,PATCH,DELETE,OPTIONS';
+    add_header Access-Control-Allow-Headers 'DNT,X-Mx-ReqToken,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization';
+    add_header Access-Control-Expose-Headers 'Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers, Content-Type';
+      root html;
+      index index.html index.htm;
+    }
+    location /comments/ {
+      proxy_pass http://$$ip$$:57581;#ws接口
+    }
+    error_page 500 502 503 504 /50x.html;
+    location = /50x.html {
+      root html;
+    }
+  }
+}
+
+
+使用说明：
+修改这些文件中你的ip/域名和路径，注意如果使用的是自己的公网ip，很多运营商屏蔽了80和443端口
+rtmp推流设置为rtmp://127.0.0.1:1935/hls，串流密钥home，建议使用obs
+弹幕后端需要安装redis,建议先启动redis,再启动flask服务器，再启动nginx，最后推流
